@@ -18,6 +18,9 @@
  * TODO: this array can be removed as we can get
  * existing enclave regions via pmp registers
  */
+/**
+ * New: PLIC MMIO regions should be protected.
+*/
 // static struct mm_region_t mm_regions[N_PMP_REGIONS];
 struct mm_region_t mm_regions[N_PMP_REGIONS];
 volatile unsigned long pmp_bitmap = 0;
@@ -169,7 +172,7 @@ static inline int get_pt_index(uintptr_t vaddr, int level)
 	return index & ((1 << RISCV_PGLEVEL_BITS) - 1) ;
 }
 
-static pte_t* walk_enclave_pt(pte_t *enclave_root_pt, uintptr_t vaddr)
+static pte_t* walk_enclave_pt(pte_t *enclave_root_pt, uintptr_t vaddr, int *pte_level)
 {
 	pte_t *pgdir = enclave_root_pt;
 	int i;
@@ -180,11 +183,14 @@ static pte_t* walk_enclave_pt(pte_t *enclave_root_pt, uintptr_t vaddr)
 		pte_t pt_entry = pgdir[pt_index];
 		if(unlikely(!PTE_TABLE(pt_entry)))
 		{
-			return 0;
+			/** @note: Huge page */
+			*pte_level = level - i;
+			return &pgdir[pt_index];
 		}
 		pgdir = (pte_t *)pte2pa(pt_entry);
 	}
 
+	*pte_level = 0;
 	return &pgdir[get_pt_index(vaddr , level - 1)];
 }
 
@@ -371,13 +377,19 @@ int check_enclave_pt(struct enclave_t *enclave)
 	return 0;
 }
 
+static inline uintptr_t pg_offset(uintptr_t vaddr, int level)
+{
+	return vaddr & ((1 << RISCV_PGSHIFT << (level * RISCV_PGLEVEL_BITS)) - 1);
+}
+
 uintptr_t get_enclave_paddr_from_va(pte_t *enclave_root_pt, uintptr_t vaddr)
 {
-	pte_t *pte = walk_enclave_pt(enclave_root_pt, vaddr);
+	int pte_level;
+	pte_t *pte = walk_enclave_pt(enclave_root_pt, vaddr, &pte_level);
 	if(!(*pte & PTE_V)){
 		return 0;
 	}
-	uintptr_t pa = pte2pa(*pte) | (vaddr & ((1 << PAGE_SHIFT) - 1));
+	uintptr_t pa = pte2pa(*pte) | pg_offset(vaddr, pte_level);
 	return pa;
 }
 
