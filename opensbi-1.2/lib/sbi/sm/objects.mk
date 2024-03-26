@@ -22,8 +22,5 @@ penglai-objs-y += gm/miracl/mrlucas.o
 penglai-objs-y += gm/SM2_sv.o
 penglai-objs-y += gm/SM3.o
 
-ifdef PENGLAI_FEATURE_SECURE_INTERRUPT
-	@echo "Secure interrupt feature enabled."
-	penglai-objs-y += device/irqchip/plic.o
-	penglai-objs-y += device/irqchip/inst_sim.o
-endif
+penglai-objs-$(CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT) += device/irqchip/plic.o
+penglai-objs-$(CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT) += device/irqchip/inst_sim.o

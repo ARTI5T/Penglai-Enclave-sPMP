@@ -14,6 +14,9 @@
 #include <sbi/sbi_error.h>
 #include <sbi/sbi_string.h>
 #include <sbi_utils/irqchip/plic.h>
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+#include <sm/device/irqchip/plic.h>
+#endif
 
 #define PLIC_PRIORITY_BASE 0x0
 #define PLIC_PENDING_BASE 0x1000
@@ -22,14 +25,21 @@
 #define PLIC_CONTEXT_BASE 0x200000
 #define PLIC_CONTEXT_STRIDE 0x1000
 
-static u32 plic_get_priority(const struct plic_data *plic, u32 source)
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+#define EXPORT_IF_SECURE_INTERRUPT
+#else
+#define EXPORT_IF_SECURE_INTERRUPT static
+#endif
+
+
+EXPORT_IF_SECURE_INTERRUPT u32 plic_get_priority(const struct plic_data *plic, u32 source)
 {
 	volatile void *plic_priority = (char *)plic->addr +
 			PLIC_PRIORITY_BASE + 4 * source;
 	return readl(plic_priority);
 }
 
-static void plic_set_priority(const struct plic_data *plic, u32 source, u32 val)
+EXPORT_IF_SECURE_INTERRUPT void plic_set_priority(const struct plic_data *plic, u32 source, u32 val)
 {
 	volatile void *plic_priority = (char *)plic->addr +
 			PLIC_PRIORITY_BASE + 4 * source;
@@ -59,7 +69,7 @@ static u32 plic_get_thresh(const struct plic_data *plic, u32 cntxid)
 	return readl(plic_thresh);
 }
 
-static void plic_set_thresh(const struct plic_data *plic, u32 cntxid, u32 val)
+EXPORT_IF_SECURE_INTERRUPT void plic_set_thresh(const struct plic_data *plic, u32 cntxid, u32 val)
 {
 	volatile void *plic_thresh;
 
@@ -148,6 +158,11 @@ int plic_warm_irqchip_init(const struct plic_data *plic,
 		ret = plic_context_init(plic, m_cntx_id, false, 0x7);
 		if (ret)
 			return ret;
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+		ret = secure_irq_add_plic_per_hart(plic, m_cntx_id);
+		if (ret)
+			return ret;
+#endif
 	}
 
 	/* By default, disable all IRQs for S-mode of target HART */
@@ -163,6 +178,11 @@ int plic_warm_irqchip_init(const struct plic_data *plic,
 int plic_cold_irqchip_init(const struct plic_data *plic)
 {
 	int i;
+
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+	if (set_plic_chip(plic))
+		return SBI_EFAIL;
+#endif
 
 	if (!plic)
 		return SBI_EINVAL;

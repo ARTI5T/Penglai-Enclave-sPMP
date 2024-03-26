@@ -271,6 +271,9 @@ struct sbi_trap_regs *sbi_trap_handler(struct sbi_trap_regs *regs)
 	const char *msg = "trap handler failed";
 	ulong mcause = csr_read(CSR_MCAUSE);
 	ulong mtval = csr_read(CSR_MTVAL), mtval2 = 0, mtinst = 0;
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+	ulong paddr;
+#endif
 	struct sbi_trap_info trap;
 
 	if (misa_extension('H')) {
@@ -336,6 +339,20 @@ struct sbi_trap_regs *sbi_trap_handler(struct sbi_trap_regs *regs)
 		break;
 	case CAUSE_LOAD_ACCESS:
 	case CAUSE_STORE_ACCESS:
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+		if (is_interrupt_controller_mmio_address(mtval, &paddr)) {
+			trap.epc = regs->mepc;
+			trap.cause = mcause;
+			trap.tval = mtval;
+			trap.tval2 = mtval2;
+			trap.tinst = mtinst;
+			trap.gva   = sbi_regs_gva(regs);
+
+			rc = platform_handle_interrupt_controller_mmio(regs, &trap, paddr);
+
+			break;
+		}
+#endif
 		sbi_pmu_ctr_incr_fw(mcause == CAUSE_LOAD_ACCESS ?
 			SBI_PMU_FW_ACCESS_LOAD : SBI_PMU_FW_ACCESS_STORE);
 		/* fallthrough */

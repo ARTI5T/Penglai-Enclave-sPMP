@@ -75,6 +75,12 @@ struct thread_state_t
   struct general_registers_t prev_state;
 };
 
+struct cpu_state_t
+{
+  int in_enclave;
+  int eid;
+};
+
 /* swap previous and current thread states */
 void swap_prev_state(struct thread_state_t* state, uintptr_t* regs);
 void swap_prev_mepc(struct thread_state_t* state, uintptr_t mepc);

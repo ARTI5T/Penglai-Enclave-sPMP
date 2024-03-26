@@ -9,6 +9,10 @@
 #include <sm/thread.h>
 #include <stdint.h>
 #include <stddef.h>
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+#include <sm/device/irq.h>
+#include <sbi/riscv_locks.h>
+#endif
 
 #define ENCLAVES_PER_METADATA_REGION 128
 #define ENCLAVE_METADATA_REGION_SIZE ((sizeof(struct enclave_t)) * ENCLAVES_PER_METADATA_REGION)
@@ -85,12 +89,16 @@ struct enclave_t
   //enclave thread context
   //TODO: support multiple threads
   struct thread_state_t thread_context;
-};
-
-struct cpu_state_t
-{
-  int in_enclave;
-  int eid;
+  
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+  struct enclave_trap_handler_t trap_handler;
+  /**
+   * Default value: 0
+   * >0 indicates some harts are executing trap handler
+   * When stopped, the value will be set to -2048
+  */
+  atomic_t trapped_harts;
+#endif
 };
 
 uintptr_t create_enclave(struct enclave_sbi_param_t create_args, int retry);
@@ -109,6 +117,19 @@ uintptr_t enclave_sys_write(uintptr_t *regs);
 uintptr_t enclave_user_defined_ocall(uintptr_t *regs, uintptr_t ocall_buf_size);
 uintptr_t enclave_derive_seal_key(uintptr_t* regs, uintptr_t salt_va,
                         uintptr_t salt_len, uintptr_t key_buf_va, uintptr_t key_buf_len);
+
+
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+uintptr_t register_enclave_irq_listen(uintptr_t* regs, unsigned long ptr);
+uintptr_t unregister_enclave_irq_listen(uintptr_t* regs, unsigned long ptr);
+uintptr_t register_enclave_trap_handler(uintptr_t* regs, unsigned long ptr);
+
+uintptr_t invoke_enclave_trap_handler(uintptr_t* regs, struct enclave_t* enclave, unsigned long param[4]);
+uintptr_t restore_from_enclave_trap_handler(uintptr_t* regs);
+
+struct enclave_t* get_enclave(int eid);
+
+#endif
 
 int check_in_enclave_world();
 

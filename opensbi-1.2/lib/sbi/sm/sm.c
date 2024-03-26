@@ -8,6 +8,10 @@
 #include <sbi/sbi_console.h>
 #include <sbi/riscv_locks.h>
 
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+#include <sm/device/irq.h>
+#endif
+
 extern volatile int print_m_mode;
 
 //static int sm_initialized = 0;
@@ -385,3 +389,23 @@ uintptr_t sm_free_enclave_mem(uintptr_t size_ptr, unsigned long flag)
 	copy_to_host((void *)size_ptr, (void *)(&size), sizeof(unsigned long));
 	return ret;
 }
+
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+
+uintptr_t sbi_uret(uintptr_t* regs) {
+	return platform_uret((struct sbi_trap_regs *) regs);
+}
+
+uintptr_t sbi_register_enclave_irq_listen(uintptr_t* regs, unsigned long ptr) {
+	return register_enclave_irq_listen(regs, ptr);
+}
+
+uintptr_t sbi_unregister_enclave_irq_listen(uintptr_t* regs, unsigned long ptr) {
+	return unregister_enclave_irq_listen(regs, ptr);
+}
+
+uintptr_t sbi_register_enclave_trap_handler(uintptr_t* regs, unsigned long ptr) {
+	return register_enclave_trap_handler(regs, ptr);
+}
+
+#endif

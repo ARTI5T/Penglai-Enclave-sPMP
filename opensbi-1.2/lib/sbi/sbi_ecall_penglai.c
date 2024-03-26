@@ -101,6 +101,20 @@ static int sbi_ecall_penglai_enclave_handler(unsigned long extid, unsigned long 
 		case SBI_GET_KEY://88
 			ret = sm_enclave_get_key((uintptr_t *)regs, regs->a0, regs->a1, regs->a2, regs->a3);
 			break;
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+		case SBI_URET://79
+			ret = sbi_uret((uintptr_t *)regs);
+			break;
+		case SBI_REGISTER_IRQ_LISTEN://78
+			ret = sbi_register_enclave_irq_listen((uintptr_t *)regs, regs->a0);
+			break;
+		case SBI_UNREGISTER_IRQ_LISTEN://77
+			ret = sbi_unregister_enclave_irq_listen((uintptr_t *)regs, regs->a0);
+			break;
+		case SBI_REGISTER_TRAP_HANDLER://76
+			ret = sbi_register_enclave_trap_handler((uintptr_t *)regs, regs->a0);
+			break;
+#endif
 		default:
 			sbi_printf("[Penglai@Monitor] enclave interface(funcid:%ld) not supported yet\n", funcid);
 			ret = SBI_ENOTSUPP;

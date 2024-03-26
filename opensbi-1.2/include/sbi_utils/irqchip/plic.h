@@ -17,6 +17,16 @@ struct plic_data {
 	unsigned long num_src;
 };
 
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+
+u32 plic_get_priority(const struct plic_data *plic, u32 source);
+
+void plic_set_priority(const struct plic_data *plic, u32 source, u32 val);
+
+void plic_set_thresh(const struct plic_data *plic, u32 cntxid, u32 val);
+
+#endif
+
 /* So far, priorities on all consumers of these functions fit in 8 bits. */
 void plic_priority_save(const struct plic_data *plic, u8 *priority, u32 num);
 

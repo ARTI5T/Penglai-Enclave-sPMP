@@ -6,7 +6,11 @@
 #include <sm/enclave.h>
 #include <sm/vm.h>
 
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+#define N_PMP_REGIONS (NPMP - 4)
+#else
 #define N_PMP_REGIONS (NPMP - 3)
+#endif
 
 #define REGION_TO_PMP(region_idx) (region_idx + 2) //from the 3rd to the N-1 regions
 #define PMP_TO_REGION(pmp_idx) (pmp_idx - 2)
@@ -80,5 +84,9 @@ int memory_reclaim(unsigned long* resp_size);
 int mm_free_clear(void* paddr, unsigned long size);
 
 void print_buddy_system();
+
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+uintptr_t get_enclave_paddr_from_va(pte_t *enclave_root_pt, uintptr_t vaddr);
+#endif
 
 #endif /* _ENCLAVE_MM_H */

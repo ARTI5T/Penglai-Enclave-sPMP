@@ -45,6 +45,18 @@ void release_big_metadata_lock(const char *str)
 		printm("[PENGLAI SM@%s %d] %s release lock\n", __func__, current_hartid(), str);
 }
 
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+static struct cpu_state_t get_cpu_state()
+{
+	return cpus[csr_read(CSR_MHARTID)];
+}
+
+static void set_cpu_state(struct cpu_state_t new_state)
+{
+	cpus[csr_read(CSR_MHARTID)] = new_state;
+}
+#endif
+
 static void enter_enclave_world(int eid)
 {
 	cpus[csr_read(CSR_MHARTID)].in_enclave = ENCLAVE_MODE;
@@ -416,6 +428,7 @@ int swap_from_host_to_enclave(uintptr_t* host_regs, struct enclave_t* enclave)
 	mstatus = INSERT_FIELD(mstatus, MSTATUS_FS, 0x3); // enable float
 	host_regs[33] = mstatus;
 
+	printm("[Penglai Monitor@%s] MEPC: %lx, MSTATUS: %lx, hart %d\n", __func__, host_regs[32], host_regs[33], current_hartid());
 	//mark that cpu is in enclave world now
 	enter_enclave_world(enclave->eid);
 	//flush TLB
@@ -462,7 +475,7 @@ int swap_from_enclave_to_host(uintptr_t* regs, struct enclave_t* enclave)
 	mstatus = INSERT_FIELD(mstatus, MSTATUS_MPP, PRV_S);
 	regs[33] = mstatus;
 #endif
-
+	printm("[Penglai Monitor@%s] MEPC: %lx, MSTATUS: %lx, hart %d\n", __func__, regs[32], regs[33], current_hartid());
 	//mark that cpu is out of enclave world now
 	exit_enclave_world();
 
@@ -470,6 +483,111 @@ int swap_from_enclave_to_host(uintptr_t* regs, struct enclave_t* enclave)
 
 	return 0;
 }
+
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+/**
+ * @todo: Add fast path
+*/
+int setup_enclave_trap_handler_context(uintptr_t* regs, struct enclave_t* enclave)
+{
+	int hart_id = current_hartid();	
+	struct hart_trap_state_t *state = get_hart_trap_state(hart_id);
+	printm("[Penglai Monitor@%s hart%d] setup_enclave_trap_handler_context %d\n", __func__, hart_id, enclave->eid);
+	//grant encalve access to memory
+	if(grant_enclave_access(enclave) < 0)
+		return -1;
+
+	/** Save previous states
+	 *  @todo: When MIE is disabled, will ecall/PMP violation trigger an interrupt?
+	 *  Disable nested interrupt */
+	swap_prev_mie(&(state->context), csr_read(CSR_MIE));
+	swap_prev_mideleg(&(state->context), csr_read(CSR_MIDELEG));
+	swap_prev_medeleg(&(state->context), csr_read(CSR_MEDELEG));
+	swap_prev_state(&(state->context), regs);
+	state->prev_ptbr = csr_read(CSR_SATP);
+	/** @note: MIE is currently disabled.
+	 *  Clear all pending interrupts.
+     *  Save MIP value, expecially *SEIP*. We may need to restore that value later. */
+	unsigned long mip = MIP_MTIP | MIP_STIP | MIP_SSIP | MIP_SEIP;
+	csr_read_clear(CSR_MIP, mip);
+	state->prev_mip = mip;
+	state->prev_mstatus = regs[33];
+	state->prev_mepc = regs[32];
+	state->prev_cpu_state = get_cpu_state();
+	/*
+	 * save host cache binding
+	 * only workable when the hardware supports the feature
+	 */
+#if 0
+	swap_prev_cache_binding(&enclave -> threads[0], read_csr(0x356));
+#endif
+
+	/** Load enclave ptbr */
+	switch_to_enclave_ptbr(&(state->context), enclave->thread_context.encl_ptbr);
+	//csr_write(CSR_STVEC, enclave->trap_state.etvec);
+	regs[32] = enclave->trap_handler.tvec;
+	//set mstatus to transfer control to U mode
+	uintptr_t mstatus = regs[33]; //In OpenSBI, we use regs to change mstatus
+	mstatus = INSERT_FIELD(mstatus, MSTATUS_MPP, PRV_U);
+	mstatus = INSERT_FIELD(mstatus, MSTATUS_FS, 0x3); // enable float
+	mstatus = INSERT_FIELD(mstatus, MSTATUS_SIE, 0); // Disable S-mode interrupts
+#if !ENABLE_NESTED_INTERRUPT
+	mstatus = INSERT_FIELD(mstatus, MSTATUS_MPIE, 0); // Disable M-mode interrupts
+#endif
+	regs[33] = mstatus;
+
+	printm("[Penglai Monitor@%s] set next instruction to %p\n", __func__, (void *)regs[32]);
+	printm("[Penglai Monitor@%s] set SATP to %lx\n", __func__, enclave->thread_context.encl_ptbr);
+	/** Clear general purpose registers */
+	sbi_memset((void*)regs, 0, 32 * sizeof(uintptr_t));
+
+	//mark that cpu is in enclave world now
+	enter_enclave_world(enclave->eid);
+	//flush TLB
+	__asm__ __volatile__ ("sfence.vma" : : : "memory");
+
+	return 0;
+}
+
+int clear_enclave_trap_handler_context(uintptr_t* regs, struct enclave_t* enclave)
+{
+	int hart_id = current_hartid();
+	struct hart_trap_state_t *state = get_hart_trap_state(hart_id);
+	printm("[Penglai Monitor@%s %d] clear_enclave_trap_handler_context\n", __func__, current_hartid());
+	//grant encalve access to memory
+	retrieve_enclave_access(enclave);
+
+	/** Restore previous status */
+	swap_prev_mie(&(state->context), csr_read(CSR_MIE));
+	swap_prev_mideleg(&(state->context), csr_read(CSR_MIDELEG));
+	swap_prev_medeleg(&(state->context), csr_read(CSR_MEDELEG));
+	/** Restore general registers */
+	swap_prev_state(&(state->context), regs);
+	/** Restore previous pending int and STIP/SSIP/SEIP */
+	unsigned long mip = state->prev_mip & (MIP_MTIP | MIP_STIP | MIP_SSIP | MIP_SEIP);
+	csr_set(CSR_MIP, mip);
+	/*
+	 * Restore host cache binding
+	 * only workable when the hardware supports the feature
+	 */
+#if 0
+	swap_prev_cache_binding(&enclave -> threads[0], read_csr(0x356));
+#endif
+
+	/** Restore previous ptbr */
+	switch_to_host_ptbr(&(state->context), state->prev_ptbr);
+	/** Restore the original mepc and mstatus. */
+	regs[32] = state->prev_mepc;
+	regs[33] = state->prev_mstatus; // Re-enable S-mode and M-mode interrupts
+
+	/** Restore previous CPU state */
+	set_cpu_state(state->prev_cpu_state);
+	//flush TLB
+	__asm__ __volatile__ ("sfence.vma" : : : "memory");
+
+	return 0;
+}
+#endif
 
 uintptr_t create_enclave(struct enclave_sbi_param_t create_args, bool retry)
 {
@@ -513,6 +631,9 @@ uintptr_t create_enclave(struct enclave_sbi_param_t create_args, bool retry)
 	enclave->thread_context.encl_ptbr = (create_args.paddr >> (RISCV_PGSHIFT) | SATP_MODE_CHOICE);
 	enclave->root_page_table = (unsigned long*)create_args.paddr;
 	enclave->state = FRESH;
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+	ATOMIC_INIT(&enclave->trapped_harts, 0);
+#endif
 
 	//Dump the PT here, for debug
 #if 0
@@ -824,6 +945,145 @@ resume_enclave_out:
 	return retval;
 }
 
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+uintptr_t invoke_enclave_trap_handler(uintptr_t* regs, struct enclave_t* enclave, unsigned long param[4])
+{
+	uintptr_t retval = 0;
+	struct hart_trap_state_t *hart_trap_state = get_hart_trap_state(current_hartid());
+	if(!enclave)
+	{
+		printm("[Penglai Monitor@%s]  wrong enclave id%d\r\n", __func__, enclave->eid);
+		return -1UL;
+	}
+
+	/** If the enclave is exited, the atomic value would be set to -2048.
+	 *  Therefore atomic_add_return <= 0 means the enclave is exited.
+	 */
+	if(atomic_add_return(&enclave->trapped_harts, 1) <= 0)
+	{
+		printm("[Penglai Monitor@%s]  Enclave %d has exited. Will not invoke trap handler.\r\n", __func__, enclave->eid);
+		return -1UL;
+	}
+
+    acquire_big_metadata_lock(__func__);
+
+	/*
+	if(enclave->host_ptbr != csr_read(CSR_SATP))
+	{
+		printm("[Penglai Monitor@%s]  enclave doesn't belong to current host process\r\n", __func__);
+		retval = -1UL;
+		goto resume_enclave_out;
+	}
+	*/
+
+	if(enclave->state == STOPPED)
+	{
+		retval = ENCLAVE_TIMER_IRQ;
+		goto invoke_trap_out;
+	}
+
+	if (enclave->state == DESTROYED) {
+		sbi_memset((void*)(enclave->paddr), 0, enclave->size);
+		mm_free((void*)(enclave->paddr), enclave->size);
+
+		spin_unlock(&enclave_metadata_lock);
+
+		//free enclave struct
+		free_enclave(enclave->eid); //the enclave state will be set INVALID here
+		return ENCLAVE_SUCCESS; //this will break the infinite loop in the enclave-driver
+	}
+
+	if(enclave->state != RUNNABLE && enclave->state != RUNNING)
+	{
+		printm("[Penglai Monitor@%s]  enclave%d is not runnable\r\n", __func__, enclave->eid);
+		retval = -1UL;
+		goto invoke_trap_out;
+	}
+
+	
+	if(setup_enclave_trap_handler_context(regs, enclave) < 0)
+	{
+		printm("[Penglai Monitor@%s]  enclave can not be run\r\n", __func__);
+		retval = -1UL;
+		goto invoke_trap_out;
+	}
+
+	printm("[Penglai Monitor@%s] after setup_enclave_trap_handler_context\n", __func__);
+
+	if(hart_trap_state->handler_running)
+	{
+		printm("[Penglai Monitor@%s]  enclave %d irq handler is already running on hart %d\r\n", __func__, enclave->eid, current_hartid());
+		retval = -1UL;
+		goto invoke_trap_out;
+	}
+
+	regs[10] = param[0];
+	regs[11] = param[1];
+	regs[12] = param[2];
+	regs[13] = param[3];
+	//enclave->state = RUNNING;
+	hart_trap_state->handler_running = 1;
+	retval = 0;
+
+
+invoke_trap_out:
+    release_big_metadata_lock(__func__);
+	return retval;
+}
+
+uintptr_t restore_from_enclave_trap_handler(uintptr_t* regs)
+{
+	uintptr_t ret = 0;
+	int eid = get_enclave_id();
+	struct enclave_t* enclave = NULL;
+	struct hart_trap_state_t *hart_trap_state = get_hart_trap_state(current_hartid());
+	if(check_in_enclave_world() < 0)
+	{
+		printm_err("[Penglai Monitor@%s] check enclave world is failed\n", __func__);
+		return -1UL;
+	}
+
+	enclave = get_enclave(eid);
+	
+	if(!enclave)
+	{
+		printm("[Penglai Monitor@%s]  Enclave is NULL! \r\n", __func__);
+		return -1UL;
+	}
+
+    acquire_big_metadata_lock(__func__);
+
+	if(check_enclave_authentication(enclave)!=0)
+	{
+		ret = -1UL;
+		printm_err("[Penglai Monitor@%s] check enclave authentication is failed\n", __func__);
+		goto restore_trap_out;
+	}
+
+	if (!hart_trap_state->handler_running)
+	{
+		ret = -1UL;
+		printm_err("[Penglai Monitor@%s] Not in enclave irq handler\n", __func__);
+		goto restore_trap_out;
+	}
+
+	clear_enclave_trap_handler_context(regs, enclave);
+
+	hart_trap_state->handler_running = 0;
+	ret = 0;
+restore_trap_out:
+    release_big_metadata_lock(__func__);
+
+	if(atomic_sub_return(&enclave->trapped_harts, 1) < 0)
+	{
+		printm("[Penglai Monitor@%s]  Unexpected trap status! Enclave %d is destroyed before trap handler returns. \r\n", __func__, enclave->eid);
+		return -1UL;
+	}
+
+	return ret;
+}
+#endif
+
 uintptr_t attest_enclave(uintptr_t eid, uintptr_t report_ptr, uintptr_t nonce)
 {
 	struct enclave_t* enclave = NULL;
@@ -866,10 +1126,23 @@ uintptr_t exit_enclave(uintptr_t* regs, unsigned long retval)
 
 	enclave = get_enclave(eid);
 
+	if(!enclave)
+	{
+		printm("[Penglai Monitor@%s]  Enclave is NULL! \r\n", __func__);
+		return -1UL;
+	}
+
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+	while(atomic_cmpxchg(&enclave->trapped_harts, 0, -2048) >= 0)
+	{
+		/** Wait until all trap handlers return. */
+	}
+#endif
+
 	//spin_lock(&enclave_metadata_lock);
     acquire_big_metadata_lock(__func__);
 
-	if(!enclave || check_enclave_authentication(enclave)!=0 || enclave->state != RUNNING)
+	if(check_enclave_authentication(enclave)!=0 || enclave->state != RUNNING)
 	{
 		printm_err("[Penglai Monitor@%s] current enclave's eid is not %d\r\n", __func__, eid);
 		//spin_unlock(&enclave_metadata_lock);
@@ -1124,3 +1397,65 @@ uintptr_t resume_from_ocall(uintptr_t* regs, unsigned int eid)
 	retval = resume_enclave(regs, eid);
 	return retval;
 }
+
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+uintptr_t register_enclave_irq_listen(uintptr_t* regs, unsigned long ptr) {
+	int eid = get_enclave_id();
+	struct enclave_t* enclave = get_enclave(eid);
+	pte_t *enclave_root_pt = (pte_t*)(enclave->thread_context.encl_ptbr << RISCV_PGSHIFT);
+
+	struct irq_src_t irq_src;
+	if (copy_from_enclave(enclave_root_pt, &irq_src, (void *)ptr /* a0 */, sizeof(irq_src))) {
+		printm_err("[Penglai Monitor@%s] unknown error happended when copy from enclave\n", __func__);
+		return -1UL;
+	}
+
+	acquire_big_metadata_lock(__func__);
+	if (platform_register_enclave_irq_listen(enclave, &irq_src)) {
+		return -1UL;
+	}
+	release_big_metadata_lock(__func__);
+
+	return 0;
+}
+
+uintptr_t unregister_enclave_irq_listen(uintptr_t* regs, unsigned long ptr) {
+	int eid = get_enclave_id();
+	struct enclave_t* enclave = get_enclave(eid);
+	pte_t *enclave_root_pt = (pte_t*)(enclave->thread_context.encl_ptbr << RISCV_PGSHIFT);
+
+	struct irq_src_t irq_src;
+	if (copy_from_enclave(enclave_root_pt, &irq_src, (void *)ptr /* a0 */, sizeof(irq_src))) {
+		printm_err("[Penglai Monitor@%s] unknown error happended when copy from enclave\n", __func__);
+		return -1UL;
+	}
+
+	acquire_big_metadata_lock(__func__);
+	if (platform_unregister_enclave_irq_listen(enclave, &irq_src)) {
+		return -1UL;
+	}
+	release_big_metadata_lock(__func__);
+
+	return 0;
+}
+
+uintptr_t register_enclave_trap_handler(uintptr_t* regs, unsigned long ptr) {
+	int eid = get_enclave_id();
+	struct enclave_t* enclave = get_enclave(eid);
+	pte_t *enclave_root_pt = (pte_t*)(enclave->thread_context.encl_ptbr << RISCV_PGSHIFT);
+
+	struct enclave_trap_handler_t handler;
+	if (copy_from_enclave(enclave_root_pt, &handler, (void *)ptr /* a0 */, sizeof(handler))) {
+		printm_err("[Penglai Monitor@%s] unknown error happended when copy from enclave\n", __func__);
+		return -1UL;
+	}
+
+	acquire_big_metadata_lock(__func__);
+	enclave->trap_handler = handler;
+	release_big_metadata_lock(__func__);
+	
+	printm("[Penglai Monitor@%s] tvec set to %p\n", __func__, (void *)handler.tvec);
+
+	return 0;
+}
+#endif

@@ -9,6 +9,7 @@
 
 #include <sbi/sbi_irqchip.h>
 #include <sbi/sbi_platform.h>
+#include <sbi/sbi_console.h>
 
 static int default_irqfn(struct sbi_trap_regs *regs)
 {
@@ -37,8 +38,10 @@ int sbi_irqchip_init(struct sbi_scratch *scratch, bool cold_boot)
 	if (rc)
 		return rc;
 
-	if (ext_irqfn != default_irqfn)
+	if (ext_irqfn != default_irqfn) {
+		sbi_printf("SBI: External IRQ handler is set\n");
 		csr_set(CSR_MIE, MIP_MEIP);
+	}
 
 	return 0;
 }

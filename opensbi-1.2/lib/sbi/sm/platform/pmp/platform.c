@@ -32,3 +32,18 @@ int platform_init()
   printm("[Penglai Monitor@%s] setting initial PMP ready\n", __func__);
   return 0;
 }
+
+#ifdef CONFIG_PENGLAI_FEATURE_SECURE_INTERRUPT
+int platform_protect_interrupt_controller_mmio(uintptr_t ptr, unsigned long size)
+{
+  printm("[Penglai Monitor@%s] Setting interrupt controller PMP ready @ %p with size %d\n", __func__, (void *)ptr, (int)size);
+  struct pmp_config_t pmp_config;
+  pmp_config.paddr = ptr;
+  pmp_config.size = size;
+  pmp_config.mode = PMP_A_NAPOT;
+  pmp_config.perm = PMP_NO_PERM;
+  set_pmp_and_sync(NPMP-2, pmp_config);
+  printm("[Penglai Monitor@%s] setting interrupt controller PMP ready\n", __func__);
+  return 0;
+}
+#endif
